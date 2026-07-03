@@ -41,6 +41,10 @@ class MockLLMProvider(LLMProvider):
                 '"review_decisions": [{"title": "Authentication concerns", "severity": "Medium", "recommendation": "Encrypt payload"}], '
                 '"confidence": 0.92}'
             )
+        if "Engineering Planner" in system_prompt or "Task Planner" in system_prompt or "Planner" in system_prompt:
+            return '{"epic_title": "Epic", "epic_description": "Desc", "tasks": [], "confidence": 0.95}'
+        if "Code Generator" in system_prompt or "Principal Software Engineer" in system_prompt:
+            return '{"implementation_plan": "Plan", "files": [], "confidence": 0.95}'
         return (
             '{"executive_summary": "Summary", "architecture_overview": "Overview", '
             '"recommended_stack": ["React", "FastAPI"], "database_design": ["Table users"], '
@@ -174,6 +178,10 @@ async def test_workflow_engine_pm_architect_chaining():
                     '"review_decisions": [{"title": "Authentication concerns", "severity": "Medium", "recommendation": "Encrypt payload"}], '
                     '"confidence": 0.92}'
                 )
+            elif "Engineering Planner" in system_prompt or "Task Planner" in system_prompt or "Planner" in system_prompt:
+                return '{"epic_title": "Epic", "epic_description": "Desc", "tasks": [], "confidence": 0.95}'
+            elif "Code Generator" in system_prompt or "Principal Software Engineer" in system_prompt:
+                return '{"implementation_plan": "Plan", "files": [], "confidence": 0.95}'
             return ""
 
     mock_provider = ChainedMockLLMProvider()

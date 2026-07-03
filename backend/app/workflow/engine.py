@@ -9,7 +9,7 @@ from app.core.database import AsyncSessionLocal
 from app.models.run import AgentRun, AgentStep, Approval
 from app.models.artifact import ProjectArtifact
 from app.models.project import Decision
-from app.agents import PMAgent, ArchitectAgent, CriticAgent
+from app.agents import PMAgent, ArchitectAgent, CriticAgent, PlannerAgent, CodegenAgent
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +169,14 @@ async def run_workflow(project_id: str, run_id: str, initial_prompt: str, start_
                 run.started_at = datetime.now()
             db.add(run)
             await db.commit()
+
+    # Reindex repository codebase structure
+    from app.services.repo_intel import RepoIndexer
+    try:
+        async with AsyncSessionLocal() as db:
+            await RepoIndexer.index_all(db)
+    except Exception as e:
+        logger.error("Repository reindexing failed during workflow initialization: %s", str(e))
 
     try:
         current_executing_stage = start_stage
@@ -418,18 +426,8 @@ async def run_workflow(project_id: str, run_id: str, initial_prompt: str, start_
                     return
                 else:
                     if is_approved:
-                        async with AsyncSessionLocal() as db:
-                            result = await db.execute(select(AgentRun).where(AgentRun.id == run_id))
-                            run_obj = result.scalars().first()
-                            if run_obj:
-                                run_obj.status = "COMPLETED"
-                                run_obj.completed_at = datetime.now()
-                                db.add(run_obj)
-                                await db.commit()
-
-                        await sse_manager.publish(run_id, {"status": "COMPLETED"})
-                        logger.info("Workflow run %s completed successfully", run_id)
-                        return
+                        current_executing_stage = "Planner"
+                        await asyncio.sleep(0.5)
                     else:
                         if review_cycle < MAX_REVIEW_CYCLES:
                             async with AsyncSessionLocal() as db:
@@ -454,6 +452,235 @@ async def run_workflow(project_id: str, run_id: str, initial_prompt: str, start_
                             await save_step(run_id, "System", "CRITIQUE", f"Workflow execution failed: maximum review cycles ({MAX_REVIEW_CYCLES}) reached without approval.")
                             await sse_manager.publish(run_id, {"status": "FAILED", "error": "Max review cycles reached"})
                             return
+
+        # --- PLANNER STAGE ---
+        if current_executing_stage == "Planner":
+            await sse_manager.publish(run_id, {"status": "PLANNER_STARTED"})
+            await sse_manager.publish(run_id, {"status": "PLANNER_THINKING"})
+            await save_step(run_id, "Planner", "THOUGHT", "Analyzing requirements and design artifacts to generate task backlog...")
+            await asyncio.sleep(0.8)
+
+            # Fetch Requirements, Architecture, Database, and API artifacts
+            async with AsyncSessionLocal() as db:
+                # Requirements
+                prd_res = await db.execute(
+                    select(ProjectArtifact)
+                    .where(ProjectArtifact.project_id == project_id, ProjectArtifact.artifact_type == "REQUIREMENTS")
+                    .order_by(ProjectArtifact.version.desc())
+                )
+                prd = prd_res.scalars().first()
+                prd_content = prd.content if prd else ""
+
+                # Architecture
+                arch_res = await db.execute(
+                    select(ProjectArtifact)
+                    .where(ProjectArtifact.project_id == project_id, ProjectArtifact.artifact_type == "ARCHITECTURE")
+                    .order_by(ProjectArtifact.version.desc())
+                )
+                arch = arch_res.scalars().first()
+                arch_content = arch.content if arch else ""
+
+                # Database
+                db_res = await db.execute(
+                    select(ProjectArtifact)
+                    .where(ProjectArtifact.project_id == project_id, ProjectArtifact.artifact_type == "DATABASE")
+                    .order_by(ProjectArtifact.version.desc())
+                )
+                db_art = db_res.scalars().first()
+                db_content = db_art.content if db_art else ""
+
+                # API
+                api_res = await db.execute(
+                    select(ProjectArtifact)
+                    .where(ProjectArtifact.project_id == project_id, ProjectArtifact.artifact_type == "API")
+                    .order_by(ProjectArtifact.version.desc())
+                )
+                api = api_res.scalars().first()
+                api_content = api.content if api else ""
+
+            planner = PlannerAgent()
+            planner_output = await planner.run(
+                prd_content=prd_content,
+                architecture_content=arch_content,
+                database_content=db_content,
+                api_content=api_content
+            )
+            
+            backlog_json = planner_output.model_dump_json(indent=2)
+            backlog_md = planner.format_to_markdown(planner_output)
+
+            await save_step(run_id, "Planner", "ARTIFACT_PROPOSAL", backlog_md)
+            await save_artifact(
+                project_id, run_id, "BACKLOG", "Engineering Backlog", backlog_json, "DRAFT"
+            )
+
+            await sse_manager.publish(run_id, {"status": "PLANNER_COMPLETED"})
+
+            if approvals_enabled:
+                async with AsyncSessionLocal() as db:
+                    run_res = await db.execute(select(AgentRun).where(AgentRun.id == run_id))
+                    run_obj = run_res.scalars().first()
+                    if run_obj:
+                        run_obj.status = "WAITING_APPROVAL"
+                        run_obj.current_stage = "Planner"
+                        approval = Approval(run_id=run_id, stage="Planner", status="PENDING", review_cycle_number=1)
+                        db.add(approval)
+                        db.add(run_obj)
+                        await db.commit()
+
+                await save_step(run_id, "System", "THOUGHT", "Engineering backlog generated. Waiting for human approval to proceed to Code Generation.")
+                await sse_manager.publish(run_id, {"status": "APPROVAL_REQUIRED", "stage": "Planner"})
+                await sse_manager.publish(run_id, {"status": "WAITING_APPROVAL", "current_stage": "Planner"})
+                return
+            else:
+                current_executing_stage = "CodeGenerator"
+                await asyncio.sleep(0.5)
+
+        # --- CODE GENERATOR STAGE ---
+        if current_executing_stage == "CodeGenerator":
+            await sse_manager.publish(run_id, {"status": "CODEGEN_STARTED"})
+            await sse_manager.publish(run_id, {"status": "CODEGEN_THINKING"})
+            await save_step(run_id, "CodeGenerator", "THOUGHT", "Analyzing backlog and generating source code, test files, and docs...")
+            await asyncio.sleep(0.8)
+
+            # Fetch all required inputs including BACKLOG
+            async with AsyncSessionLocal() as db:
+                # Requirements
+                prd_res = await db.execute(
+                    select(ProjectArtifact)
+                    .where(ProjectArtifact.project_id == project_id, ProjectArtifact.artifact_type == "REQUIREMENTS")
+                    .order_by(ProjectArtifact.version.desc())
+                )
+                prd = prd_res.scalars().first()
+                prd_content = prd.content if prd else ""
+
+                # Architecture
+                arch_res = await db.execute(
+                    select(ProjectArtifact)
+                    .where(ProjectArtifact.project_id == project_id, ProjectArtifact.artifact_type == "ARCHITECTURE")
+                    .order_by(ProjectArtifact.version.desc())
+                )
+                arch = arch_res.scalars().first()
+                arch_content = arch.content if arch else ""
+
+                # Database
+                db_res = await db.execute(
+                    select(ProjectArtifact)
+                    .where(ProjectArtifact.project_id == project_id, ProjectArtifact.artifact_type == "DATABASE")
+                    .order_by(ProjectArtifact.version.desc())
+                )
+                db_art = db_res.scalars().first()
+                db_content = db_art.content if db_art else ""
+
+                # API
+                api_res = await db.execute(
+                    select(ProjectArtifact)
+                    .where(ProjectArtifact.project_id == project_id, ProjectArtifact.artifact_type == "API")
+                    .order_by(ProjectArtifact.version.desc())
+                )
+                api = api_res.scalars().first()
+                api_content = api.content if api else ""
+
+                # Backlog
+                backlog_res = await db.execute(
+                    select(ProjectArtifact)
+                    .where(ProjectArtifact.project_id == project_id, ProjectArtifact.artifact_type == "BACKLOG")
+                    .order_by(ProjectArtifact.version.desc())
+                )
+                backlog = backlog_res.scalars().first()
+                backlog_content = backlog.content if backlog else ""
+
+                codegen = CodegenAgent()
+                codegen_output = await codegen.run(
+                    prd_content=prd_content,
+                    architecture_content=arch_content,
+                    database_content=db_content,
+                    api_content=api_content,
+                    backlog_content=backlog_content,
+                    db=db
+                )
+
+            # Save implementation plan
+            await save_step(run_id, "CodeGenerator", "ARTIFACT_PROPOSAL", codegen_output.implementation_plan)
+            await save_artifact(
+                project_id, run_id, "IMPLEMENTATION_PLAN", "Implementation Plan", codegen_output.implementation_plan, "DRAFT"
+            )
+
+            # Save each generated file as a separate ProjectArtifact of type "GENERATED_FILE"
+            for gen_file in codegen_output.files:
+                await save_artifact(
+                    project_id,
+                    run_id,
+                    "GENERATED_FILE",
+                    gen_file.path,
+                    gen_file.content,
+                    "DRAFT"
+                )
+
+            await sse_manager.publish(run_id, {"status": "CODEGEN_COMPLETED"})
+
+            # Transition directly to CodeReviewer stage
+            current_executing_stage = "CodeReviewer"
+            await asyncio.sleep(0.5)
+
+        # --- CODE REVIEWER STAGE ---
+        if current_executing_stage == "CodeReviewer":
+            await sse_manager.publish(run_id, {"status": "CODEREVIEW_STARTED"})
+            await sse_manager.publish(run_id, {"status": "CODEREVIEW_THINKING"})
+            await save_step(run_id, "CodeReviewer", "THOUGHT", "Analyzing generated code artifacts for architectural compliance, reuse, security, and maintainability...")
+            await asyncio.sleep(0.8)
+
+            from app.services.code_reviewer import CodeReviewService
+            async with AsyncSessionLocal() as db:
+                review_output = await CodeReviewService.review_code(db, project_id, run_id)
+            
+            await sse_manager.publish(run_id, {"status": "CODEREVIEW_COMPLETED"})
+
+            if approvals_enabled:
+                async with AsyncSessionLocal() as db:
+                    run_res = await db.execute(select(AgentRun).where(AgentRun.id == run_id))
+                    run_obj = run_res.scalars().first()
+                    if run_obj:
+                        run_obj.status = "WAITING_APPROVAL"
+                        run_obj.current_stage = "CodeReviewer"
+                        approval = Approval(run_id=run_id, stage="CodeReviewer", status="PENDING", review_cycle_number=1)
+                        db.add(approval)
+                        db.add(run_obj)
+                        await db.commit()
+                
+                await save_step(run_id, "System", "THOUGHT", f"Code review complete (Status: {review_output.status}, Score: {review_output.score}). Waiting for human approval to write files to repository.")
+                await sse_manager.publish(run_id, {"status": "APPROVAL_REQUIRED", "stage": "CodeReviewer"})
+                await sse_manager.publish(run_id, {"status": "WAITING_APPROVAL", "current_stage": "CodeReviewer"})
+                return
+            else:
+                # If approvals are disabled, execute safety disk write immediately
+                async with AsyncSessionLocal() as db:
+                    art_res = await db.execute(
+                        select(ProjectArtifact)
+                        .where(ProjectArtifact.run_id == run_id, ProjectArtifact.artifact_type == "GENERATED_FILE")
+                    )
+                    gen_files = art_res.scalars().all()
+                    files_to_write = [{"path": g.title, "content": g.content} for g in gen_files]
+                    
+                    from app.services.codegen import write_generated_files
+                    write_generated_files(run_id, files_to_write)
+                    
+                    # Re-index repository
+                    from app.services.repo_intel import RepoIndexer
+                    await RepoIndexer.index_all(db)
+                    
+                    run_res = await db.execute(select(AgentRun).where(AgentRun.id == run_id))
+                    run_obj = run_res.scalars().first()
+                    if run_obj:
+                        run_obj.status = "COMPLETED"
+                        run_obj.completed_at = datetime.now()
+                        db.add(run_obj)
+                        await db.commit()
+                        
+                await sse_manager.publish(run_id, {"status": "APPROVED", "stage": "CodeReviewer"})
+                await sse_manager.publish(run_id, {"status": "COMPLETED"})
+                logger.info("Workflow run %s completed successfully (files written directly)", run_id)
+                return
 
     except Exception as e:
         logger.error("Workflow run %s stage failed: %s", run_id, str(e), exc_info=True)

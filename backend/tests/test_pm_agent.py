@@ -50,6 +50,10 @@ class MockLLMProvider(LLMProvider):
                 '"review_decisions": [{"title": "Authentication concerns", "severity": "Medium", "recommendation": "Encrypt payload"}], '
                 '"confidence": 0.92}'
             )
+        if "Engineering Planner" in system_prompt or "Task Planner" in system_prompt or "Planner" in system_prompt:
+            return '{"epic_title": "Epic", "epic_description": "Desc", "tasks": [], "confidence": 0.95}'
+        if "Code Generator" in system_prompt or "Principal Software Engineer" in system_prompt:
+            return '{"implementation_plan": "Plan", "files": [], "confidence": 0.95}'
         return '{"summary": "Mock summary", "requirements": ["Req 1"], "user_stories": ["Story 1"], "risks": ["Risk 1"], "decisions": ["Decision 1"], "confidence": 0.9}'
 
 @pytest.fixture(autouse=True)

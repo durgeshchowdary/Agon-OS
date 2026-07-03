@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.core.database import init_db
-from app.api.v1 import auth, projects, runs
+from app.api.v1 import auth, projects, runs, repo_intel
 
 # Configure logging
 logging.basicConfig(
@@ -32,6 +32,16 @@ async def on_startup():
     logger.info("Initializing database...")
     await init_db()
     logger.info("Database initialized successfully.")
+    
+    logger.info("Running Repository Intelligence codebase indexing sweep...")
+    from app.services.repo_intel import RepoIndexer
+    from app.core.database import AsyncSessionLocal
+    try:
+        async with AsyncSessionLocal() as db:
+            await RepoIndexer.index_all(db)
+        logger.info("Repository Intelligence indexing complete.")
+    except Exception as e:
+        logger.error("Repository Intelligence indexing failed during startup: %s", str(e))
 
 # Health check
 @app.get("/health")
@@ -43,3 +53,4 @@ app.include_router(auth.router, prefix=f"{settings.API_V1_STR}/auth", tags=["Aut
 app.include_router(projects.router, prefix=f"{settings.API_V1_STR}/projects", tags=["Projects"])
 # Incorporate runs routing
 app.include_router(runs.router, prefix=settings.API_V1_STR, tags=["Agent Runs"])
+app.include_router(repo_intel.router, prefix=settings.API_V1_STR, tags=["Repository Intelligence"])

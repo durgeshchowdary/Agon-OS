@@ -46,6 +46,30 @@ class MockLLMProvider(LLMProvider):
                     '"review_decisions": [{"title": "Authentication concerns", "severity": "Medium", '
                     '"recommendation": "Encrypt payload"}], "confidence": 0.92}'
                 )
+            elif schema_name == "PlannerOutput":
+                return (
+                    '{"epic_title": "GST Filing Platform MVP", "epic_description": "Implement authentication, billing calculation, reporting services, and compliance tracking.", '
+                    '"tasks": [{"id": "TASK-101", "title": "Database Schema Design", "description": "Design and verify models for transactions, users, and compliance logs.", '
+                    '"complexity": "Medium", "priority": "Critical", "estimate": "3 story points", "dependencies": [], "acceptance_criteria": ["DB connection initiates cleanly", "Tables users, transactions, and audit_logs are created on startup"], '
+                    '"subtasks": [{"id": "SUB-101a", "title": "Define User Model", "description": "Implement user login and fields", "complexity": "Low", "priority": "High", "estimate": "1 story point", "dependencies": [], "acceptance_criteria": ["User table is normal and clean"]}]}], "confidence": 0.96}'
+                )
+            elif schema_name == "CodegenOutput":
+                return (
+                    '{"implementation_plan": "### Implementation Plan\\n\\n1. Define database tables.\\n2. Write models.\\n3. Add tests.", '
+                    '"files": [{"path": "backend/app/api/v1/billing.py", "content": "class BillingEngine:\\n    def calculate_tax(self, amount: float) -> float:\\n        return amount * 0.18\\n", "type": "code"}, '
+                    '{"path": "backend/tests/test_billing.py", "content": "def test_calculate_tax():\\n    from app.api.v1.billing import BillingEngine\\n    engine = BillingEngine()\\n    assert engine.calculate_tax(100.0) == 18.0\\n", "type": "test"}], '
+                    '"confidence": 0.97}'
+                )
+            elif schema_name == "CodeReviewOutput":
+                return (
+                    '{"status": "WARNING", "summary": "Code review complete. Minor maintainability warning on variable naming.", '
+                    '"score": 95.0, "findings": [{'
+                    '"category": "Maintainability", "severity": "Medium", "file_path": "backend/app/api/v1/billing.py", '
+                    '"line_number": 3, "finding_title": "Naming clarity", '
+                    '"description": "Variable name amount_t is slightly ambiguous", '
+                    '"recommendation": "Rename amount_t to calculated_tax for clarity"'
+                    '}], "confidence": 0.95}'
+                )
             
             # Generic fallback generator if none of the above matches
             mock_dict = {}
@@ -88,6 +112,30 @@ class MockLLMProvider(LLMProvider):
                 '"architectural_gaps": ["Gap"], "alternative_approaches": ["Alt"], '
                 '"review_decisions": [{"title": "Authentication concerns", "severity": "Medium", '
                 '"recommendation": "Encrypt payload"}], "confidence": 0.92}'
+            )
+        elif "Engineering Planner" in system_prompt:
+            return (
+                '{"epic_title": "GST Filing Platform MVP", "epic_description": "Implement authentication, billing calculation, reporting services, and compliance tracking.", '
+                '"tasks": [{"id": "TASK-101", "title": "Database Schema Design", "description": "Design and verify models for transactions, users, and compliance logs.", '
+                '"complexity": "Medium", "priority": "Critical", "estimate": "3 story points", "dependencies": [], "acceptance_criteria": ["DB connection initiates cleanly", "Tables users, transactions, and audit_logs are created on startup"], '
+                '"subtasks": [{"id": "SUB-101a", "title": "Define User Model", "description": "Implement user login and fields", "complexity": "Low", "priority": "High", "estimate": "1 story point", "dependencies": [], "acceptance_criteria": ["User table is normal and clean"]}]}], "confidence": 0.96}'
+            )
+        elif "Code Generator" in system_prompt or "Principal Software Engineer" in system_prompt:
+            return (
+                '{"implementation_plan": "### Implementation Plan\\n\\n1. Define database tables.\\n2. Write models.\\n3. Add tests.", '
+                '"files": [{"path": "backend/app/api/v1/billing.py", "content": "class BillingEngine:\\n    def calculate_tax(self, amount: float) -> float:\\n        return amount * 0.18\\n", "type": "code"}, '
+                '{"path": "backend/tests/test_billing.py", "content": "def test_calculate_tax():\\n    from app.api.v1.billing import BillingEngine\\n    engine = BillingEngine()\\n    assert engine.calculate_tax(100.0) == 18.0\\n", "type": "test"}], '
+                '"confidence": 0.97}'
+            )
+        elif "Automated Code Reviewer" in system_prompt or "CodeReviewer" in system_prompt:
+            return (
+                '{"status": "WARNING", "summary": "Code review complete. Minor maintainability warning on variable naming.", '
+                '"score": 95.0, "findings": [{'
+                '"category": "Maintainability", "severity": "Medium", "file_path": "backend/app/api/v1/billing.py", '
+                '"line_number": 3, "finding_title": "Naming clarity", '
+                '"description": "Variable name amount_t is slightly ambiguous", '
+                '"recommendation": "Rename amount_t to calculated_tax for clarity"'
+                '}], "confidence": 0.95}'
             )
         
         return "Mock response from MockLLMProvider"

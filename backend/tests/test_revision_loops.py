@@ -58,6 +58,10 @@ class RevisionMockLLMProvider(LLMProvider):
                 "approval_status": status,
                 "confidence": 0.92
             })
+        elif "Engineering Planner" in system_prompt or "Task Planner" in system_prompt or "Planner" in system_prompt:
+            return '{"epic_title": "Epic", "epic_description": "Desc", "tasks": [], "confidence": 0.95}'
+        elif "Code Generator" in system_prompt or "Principal Software Engineer" in system_prompt:
+            return '{"implementation_plan": "Plan", "files": [], "confidence": 0.95}'
         return "{}"
 
 @pytest.fixture(autouse=True)
@@ -152,8 +156,8 @@ async def test_reviewer_approves_immediately():
                 select(ProjectArtifact).where(ProjectArtifact.run_id == run_id)
             )
             artifacts = art_res.scalars().all()
-            # Requirements, Architecture, Database, API, and Architecture Review
-            assert len(artifacts) == 5
+            # Requirements, Architecture, Database, API, Architecture Review, Backlog, Plan
+            assert len(artifacts) == 7
             for a in artifacts:
                 assert a.review_cycle_number == 1
 
@@ -357,7 +361,7 @@ async def test_reviewer_approval_gates_interactive(test_client, auth_headers):
             assert rev2_app.status == "PENDING"
             assert rev2_app.comments == "AGENT_APPROVED"
 
-        # 6. Approve Reviewer stage (Final Approval) -> Complete run
+        # 6. Approve Reviewer stage -> Transition to Planner stage
         resp = test_client.post(
             f"/api/v1/runs/{run_id}/approve",
             json={"stage": "Reviewer", "approved_by": "test_qa"},
@@ -366,6 +370,34 @@ async def test_reviewer_approval_gates_interactive(test_client, auth_headers):
         assert resp.status_code == 200
         await asyncio.sleep(1.0)
         
+        async with AsyncSessionLocal() as db:
+            db_run = (await db.execute(select(AgentRun).where(AgentRun.id == run_id))).scalars().first()
+            assert db_run.status == "WAITING_APPROVAL"
+            assert db_run.current_stage == "Planner"
+
+        # 7. Approve Planner stage -> Transition to CodeGenerator stage
+        resp = test_client.post(
+            f"/api/v1/runs/{run_id}/approve",
+            json={"stage": "Planner", "approved_by": "test_pm"},
+            headers=auth_headers
+        )
+        assert resp.status_code == 200
+        await asyncio.sleep(1.0)
+
+        async with AsyncSessionLocal() as db:
+            db_run = (await db.execute(select(AgentRun).where(AgentRun.id == run_id))).scalars().first()
+            assert db_run.status == "WAITING_APPROVAL"
+            assert db_run.current_stage == "CodeGenerator"
+
+        # 8. Approve CodeGenerator stage -> Transition to COMPLETED stage
+        resp = test_client.post(
+            f"/api/v1/runs/{run_id}/approve",
+            json={"stage": "CodeGenerator", "approved_by": "test_lead_dev"},
+            headers=auth_headers
+        )
+        assert resp.status_code == 200
+        await asyncio.sleep(1.0)
+
         async with AsyncSessionLocal() as db:
             db_run = (await db.execute(select(AgentRun).where(AgentRun.id == run_id))).scalars().first()
             assert db_run.status == "COMPLETED"

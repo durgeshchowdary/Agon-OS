@@ -213,7 +213,7 @@ async def approve_run_stage(
         raise HTTPException(status_code=403, detail="Access denied to this run")
         
     # 3. Validation
-    if payload.stage not in ["PM", "Architect", "Reviewer"]:
+    if payload.stage not in ["PM", "Architect", "Reviewer", "Planner", "CodeGenerator", "CodeReviewer"]:
         raise HTTPException(status_code=400, detail="Invalid approval stage name")
     if run.status != "WAITING_APPROVAL":
         raise HTTPException(status_code=400, detail="Run is not waiting for approval")
@@ -284,13 +284,22 @@ async def approve_run_stage(
         MAX_REVIEW_CYCLES = 3
         
         if agent_decision_approved or review_cycle >= MAX_REVIEW_CYCLES:
-            run.status = "COMPLETED"
-            run.completed_at = datetime.now()
+            run.status = "RUNNING"
+            run.current_stage = "Planner"
             db.add(run)
             await db.commit()
             await db.refresh(run)
             await sse_manager.publish(run_id, {"status": "APPROVED", "stage": "Reviewer", "cycle": review_cycle})
-            await sse_manager.publish(run_id, {"status": "COMPLETED"})
+            await sse_manager.publish(run_id, {"status": "WORKFLOW_RESUMED", "stage": "Planner"})
+            
+            background_tasks.add_task(
+                run_workflow,
+                project_id=run.project_id,
+                run_id=run.id,
+                initial_prompt=run.initial_prompt,
+                start_stage="Planner",
+                approvals_enabled=True
+            )
         else:
             # Re-route to Architect Revision
             run.status = "RUNNING"
@@ -320,6 +329,63 @@ async def approve_run_stage(
                 start_stage="Architect",
                 approvals_enabled=True
             )
+    elif payload.stage == "Planner":
+        run.status = "RUNNING"
+        run.current_stage = "CodeGenerator"
+        db.add(run)
+        await db.commit()
+        await db.refresh(run)
+        await sse_manager.publish(run_id, {"status": "APPROVED", "stage": "Planner"})
+        await sse_manager.publish(run_id, {"status": "WORKFLOW_RESUMED", "stage": "CodeGenerator"})
+        
+        background_tasks.add_task(
+            run_workflow,
+            project_id=run.project_id,
+            run_id=run.id,
+            initial_prompt=run.initial_prompt,
+            start_stage="CodeGenerator",
+            approvals_enabled=True
+        )
+    elif payload.stage in ("CodeGenerator", "CodeReviewer"):
+        # 1. Fetch generated file artifacts for current run
+        art_res = await db.execute(
+            select(ProjectArtifact)
+            .where(
+                ProjectArtifact.run_id == run_id,
+                ProjectArtifact.artifact_type == "GENERATED_FILE"
+            )
+        )
+        gen_files = art_res.scalars().all()
+        files_to_write = [{"path": g.title, "content": g.content} for g in gen_files]
+
+        # 2. Run Safety Disk Writer (creates backups, checks traversal, verifies syntax, rolls back on exception)
+        try:
+            from app.services.codegen import write_generated_files
+            write_generated_files(run_id, files_to_write)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Safety Disk Writer execution failed: {str(e)}"
+            )
+
+        # 2.5 Re-index repository codebase
+        try:
+            from app.services.repo_intel import RepoIndexer
+            await RepoIndexer.index_all(db)
+        except Exception as e:
+            # Import logger if needed or log as warning
+            import logging
+            logging.getLogger(__name__).warning(f"Re-indexing failed after approval write: {e}")
+
+        # 3. Transition to completed
+        run.status = "COMPLETED"
+        run.completed_at = datetime.now()
+        db.add(run)
+        await db.commit()
+        await db.refresh(run)
+        
+        await sse_manager.publish(run_id, {"status": "APPROVED", "stage": "CodeGenerator"})
+        await sse_manager.publish(run_id, {"status": "COMPLETED"})
         
     return approval
 
@@ -346,7 +412,7 @@ async def reject_run_stage(
         raise HTTPException(status_code=403, detail="Access denied to this run")
         
     # 3. Validation
-    if payload.stage not in ["PM", "Architect", "Reviewer"]:
+    if payload.stage not in ["PM", "Architect", "Reviewer", "Planner", "CodeGenerator", "CodeReviewer"]:
         raise HTTPException(status_code=400, detail="Invalid rejection stage name")
     if run.status != "WAITING_APPROVAL":
         raise HTTPException(status_code=400, detail="Run is not waiting for approval")
@@ -416,6 +482,60 @@ async def reject_run_stage(
         await sse_manager.publish(run_id, {"status": "REJECTED", "stage": "Reviewer", "cycle": run.review_cycle_number})
         await sse_manager.publish(run_id, {"status": "APPROVAL_REQUIRED", "stage": "Architect", "cycle": run.review_cycle_number})
         await sse_manager.publish(run_id, {"status": "WAITING_APPROVAL", "current_stage": "Architect", "cycle": run.review_cycle_number})
+    elif payload.stage == "Planner":
+        run.status = "WAITING_APPROVAL"
+        run.current_stage = "Reviewer"
+        
+        # Insert a new PENDING approval record for Reviewer
+        new_rev_pending = Approval(
+            run_id=run_id,
+            stage="Reviewer",
+            status="PENDING",
+            review_cycle_number=run.review_cycle_number or 1
+        )
+        db.add(new_rev_pending)
+        db.add(run)
+        await db.commit()
+        await db.refresh(run)
+        await sse_manager.publish(run_id, {"status": "REJECTED", "stage": "Planner"})
+        await sse_manager.publish(run_id, {"status": "APPROVAL_REQUIRED", "stage": "Reviewer"})
+        await sse_manager.publish(run_id, {"status": "WAITING_APPROVAL", "current_stage": "Reviewer"})
+    elif payload.stage == "CodeGenerator":
+        run.status = "WAITING_APPROVAL"
+        run.current_stage = "Planner"
+        
+        # Insert a new PENDING approval record for Planner
+        new_plan_pending = Approval(
+            run_id=run_id,
+            stage="Planner",
+            status="PENDING",
+            review_cycle_number=1
+        )
+        db.add(new_plan_pending)
+        db.add(run)
+        await db.commit()
+        await db.refresh(run)
+        await sse_manager.publish(run_id, {"status": "REJECTED", "stage": "CodeGenerator"})
+        await sse_manager.publish(run_id, {"status": "APPROVAL_REQUIRED", "stage": "Planner"})
+        await sse_manager.publish(run_id, {"status": "WAITING_APPROVAL", "current_stage": "Planner"})
+    elif payload.stage == "CodeReviewer":
+        run.status = "WAITING_APPROVAL"
+        run.current_stage = "CodeGenerator"
+        
+        # Insert a new PENDING approval record for CodeGenerator
+        new_gen_pending = Approval(
+            run_id=run_id,
+            stage="CodeGenerator",
+            status="PENDING",
+            review_cycle_number=1
+        )
+        db.add(new_gen_pending)
+        db.add(run)
+        await db.commit()
+        await db.refresh(run)
+        await sse_manager.publish(run_id, {"status": "REJECTED", "stage": "CodeReviewer"})
+        await sse_manager.publish(run_id, {"status": "APPROVAL_REQUIRED", "stage": "CodeGenerator"})
+        await sse_manager.publish(run_id, {"status": "WAITING_APPROVAL", "current_stage": "CodeGenerator"})
         
     return approval
 

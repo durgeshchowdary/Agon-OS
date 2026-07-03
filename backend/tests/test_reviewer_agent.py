@@ -33,6 +33,10 @@ class MockLLMProvider(LLMProvider):
             if isinstance(res, Exception):
                 raise res
             return res
+        if "Engineering Planner" in system_prompt or "Task Planner" in system_prompt or "Planner" in system_prompt:
+            return '{"epic_title": "Epic", "epic_description": "Desc", "tasks": [], "confidence": 0.95}'
+        if "Code Generator" in system_prompt or "Principal Software Engineer" in system_prompt:
+            return '{"implementation_plan": "Plan", "files": [], "confidence": 0.95}'
         return (
             '{"executive_summary": "Summary", "strengths": ["Str"], "weaknesses": ["Weak"], '
             '"scalability_issues": ["Scale"], "security_concerns": ["Security"], "cost_risks": ["Cost"], '
@@ -163,6 +167,10 @@ async def test_workflow_engine_reviewer_integration():
                 return arch_response
             elif "Design Reviewer and QA" in system_prompt:
                 return rev_response
+            elif "Engineering Planner" in system_prompt or "Task Planner" in system_prompt or "Planner" in system_prompt:
+                return '{"epic_title": "Epic", "epic_description": "Desc", "tasks": [], "confidence": 0.95}'
+            elif "Code Generator" in system_prompt or "Principal Software Engineer" in system_prompt:
+                return '{"implementation_plan": "Plan", "files": [], "confidence": 0.95}'
             return ""
 
     mock_provider = FullMockLLMProvider()
