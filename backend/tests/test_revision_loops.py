@@ -23,6 +23,7 @@ from app.models.user import User
 
 from fastapi.testclient import TestClient
 from app.main import app
+from tests.mock_responses import code_review_response
 
 class RevisionMockLLMProvider(LLMProvider):
     def __init__(self, reviewer_approved_sequence: list):
@@ -60,6 +61,8 @@ class RevisionMockLLMProvider(LLMProvider):
             })
         elif "Engineering Planner" in system_prompt or "Task Planner" in system_prompt or "Planner" in system_prompt:
             return '{"epic_title": "Epic", "epic_description": "Desc", "tasks": [], "confidence": 0.95}'
+        elif "Automated Code Reviewer" in system_prompt or "CodeReviewer" in system_prompt:
+            return code_review_response()
         elif "Code Generator" in system_prompt or "Principal Software Engineer" in system_prompt:
             return '{"implementation_plan": "Plan", "files": [], "confidence": 0.95}'
         return "{}"
@@ -156,8 +159,8 @@ async def test_reviewer_approves_immediately():
                 select(ProjectArtifact).where(ProjectArtifact.run_id == run_id)
             )
             artifacts = art_res.scalars().all()
-            # Requirements, Architecture, Database, API, Architecture Review, Backlog, Plan
-            assert len(artifacts) == 7
+            # Requirements, Architecture, Database, API, Architecture Review, Backlog, Plan, Code Review
+            assert len(artifacts) == 8
             for a in artifacts:
                 assert a.review_cycle_number == 1
 
@@ -387,12 +390,12 @@ async def test_reviewer_approval_gates_interactive(test_client, auth_headers):
         async with AsyncSessionLocal() as db:
             db_run = (await db.execute(select(AgentRun).where(AgentRun.id == run_id))).scalars().first()
             assert db_run.status == "WAITING_APPROVAL"
-            assert db_run.current_stage == "CodeGenerator"
+            assert db_run.current_stage == "CodeReviewer"
 
-        # 8. Approve CodeGenerator stage -> Transition to COMPLETED stage
+        # 8. Approve CodeReviewer stage -> Transition to COMPLETED stage
         resp = test_client.post(
             f"/api/v1/runs/{run_id}/approve",
-            json={"stage": "CodeGenerator", "approved_by": "test_lead_dev"},
+            json={"stage": "CodeReviewer", "approved_by": "test_lead_dev"},
             headers=auth_headers
         )
         assert resp.status_code == 200

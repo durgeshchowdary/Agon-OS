@@ -13,12 +13,25 @@ from sqlalchemy.future import select
 from fastapi.testclient import TestClient
 
 from app.core.database import AsyncSessionLocal, init_db
+from app.agents.architect import ArchitectOutput
+from app.agents.critic import ReviewerOutput
+from app.agents.pm import PMOutput
 from app.models.artifact import ProjectArtifact
 from app.models.run import AgentRun, AgentStep, Approval
 from app.models.user import User
+from app.schemas.codegen import CodegenOutput
 from app.schemas.code_reviewer import CodeReviewOutput, ReviewFinding
+from app.schemas.planner import PlannerOutput
 from app.services.code_reviewer import CodeReviewService
 from app.main import app
+from tests.mock_responses import (
+    architect_response,
+    code_review_response,
+    codegen_response,
+    planner_response,
+    pm_response,
+    reviewer_response,
+)
 
 @pytest.fixture(autouse=True)
 async def setup_db():
@@ -93,6 +106,13 @@ def calculate_review_status_and_score(findings: list[ReviewFinding]) -> tuple[st
     return status, score
 
 def test_scoring_and_status_logic():
+    PMOutput.model_validate_json(pm_response())
+    ArchitectOutput.model_validate_json(architect_response())
+    ReviewerOutput.model_validate_json(reviewer_response())
+    PlannerOutput.model_validate_json(planner_response())
+    CodegenOutput.model_validate_json(codegen_response())
+    CodeReviewOutput.model_validate_json(code_review_response())
+
     # 1. Test FAIL due to Critical finding
     f1 = ReviewFinding(
         category="Security",

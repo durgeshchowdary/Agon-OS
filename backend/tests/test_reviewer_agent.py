@@ -20,6 +20,7 @@ from app.models.run import AgentRun, AgentStep
 from app.models.project import Project, Decision
 from app.models.artifact import ProjectArtifact
 from app.models.user import User
+from tests.mock_responses import code_review_response, response_for_prompt
 
 class MockLLMProvider(LLMProvider):
     def __init__(self, responses=None):
@@ -33,17 +34,7 @@ class MockLLMProvider(LLMProvider):
             if isinstance(res, Exception):
                 raise res
             return res
-        if "Engineering Planner" in system_prompt or "Task Planner" in system_prompt or "Planner" in system_prompt:
-            return '{"epic_title": "Epic", "epic_description": "Desc", "tasks": [], "confidence": 0.95}'
-        if "Code Generator" in system_prompt or "Principal Software Engineer" in system_prompt:
-            return '{"implementation_plan": "Plan", "files": [], "confidence": 0.95}'
-        return (
-            '{"executive_summary": "Summary", "strengths": ["Str"], "weaknesses": ["Weak"], '
-            '"scalability_issues": ["Scale"], "security_concerns": ["Security"], "cost_risks": ["Cost"], '
-            '"architectural_gaps": ["Gap"], "alternative_approaches": ["Alt"], '
-            '"review_decisions": [{"title": "Single point of failure", "severity": "High", "recommendation": "Redundancy"}], '
-            '"confidence": 0.95}'
-        )
+        return response_for_prompt(system_prompt)
 
 @pytest.fixture(autouse=True)
 async def setup_db():
@@ -171,7 +162,9 @@ async def test_workflow_engine_reviewer_integration():
                 return '{"epic_title": "Epic", "epic_description": "Desc", "tasks": [], "confidence": 0.95}'
             elif "Code Generator" in system_prompt or "Principal Software Engineer" in system_prompt:
                 return '{"implementation_plan": "Plan", "files": [], "confidence": 0.95}'
-            return ""
+            elif "Automated Code Reviewer" in system_prompt or "CodeReviewer" in system_prompt:
+                return code_review_response()
+            return response_for_prompt(system_prompt)
 
     mock_provider = FullMockLLMProvider()
     

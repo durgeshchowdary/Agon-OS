@@ -23,9 +23,14 @@ from app.models.user import User
 
 from fastapi.testclient import TestClient
 from app.main import app
+from tests.mock_responses import code_review_response
 
 class MockCodegenLLMProvider:
     async def generate(self, system_prompt: str, user_prompt: str, response_schema=None) -> str:
+        if response_schema and getattr(response_schema, "__name__", "") == "CodeReviewOutput":
+            return code_review_response()
+        if "Automated Code Reviewer" in system_prompt or "CodeReviewer" in system_prompt:
+            return code_review_response()
         return (
             '{"implementation_plan": "### Plan", '
             '"files": [{"path": "backend/app/api/v1/mock_billing.py", "content": "class MockBilling:\\n    pass\\n", "type": "code"}], '
@@ -193,7 +198,7 @@ async def test_codegen_approval_gates_and_rejections(test_client, auth_headers):
         async with AsyncSessionLocal() as db:
             db_run = (await db.execute(select(AgentRun).where(AgentRun.id == run_id))).scalars().first()
             assert db_run.status == "WAITING_APPROVAL"
-            assert db_run.current_stage == "CodeGenerator"
+            assert db_run.current_stage == "CodeReviewer"
             
             # Check for generated files in the DB (type = GENERATED_FILE)
             art_res = await db.execute(
@@ -203,10 +208,10 @@ async def test_codegen_approval_gates_and_rejections(test_client, auth_headers):
             assert len(g_files) == 1
             assert g_files[0].title == "backend/app/api/v1/mock_billing.py"
 
-        # Reject the CodeGenerator stage -> Reverts to Planner stage
+        # Reject the CodeReviewer stage -> Reverts to CodeGenerator stage
         resp = test_client.post(
             f"/api/v1/runs/{run_id}/reject",
-            json={"stage": "CodeGenerator", "approved_by": "test_pm"},
+            json={"stage": "CodeReviewer", "approved_by": "test_pm"},
             headers=auth_headers
         )
         assert resp.status_code == 200
@@ -214,7 +219,7 @@ async def test_codegen_approval_gates_and_rejections(test_client, auth_headers):
         async with AsyncSessionLocal() as db:
             db_run = (await db.execute(select(AgentRun).where(AgentRun.id == run_id))).scalars().first()
             assert db_run.status == "WAITING_APPROVAL"
-            assert db_run.current_stage == "Planner"
+            assert db_run.current_stage == "CodeGenerator"
             
-            plan_app = (await db.execute(select(Approval).where(Approval.run_id == run_id, Approval.stage == "Planner"))).scalars().first()
-            assert plan_app.status == "PENDING"
+            codegen_app = (await db.execute(select(Approval).where(Approval.run_id == run_id, Approval.stage == "CodeGenerator"))).scalars().first()
+            assert codegen_app.status == "PENDING"

@@ -20,12 +20,15 @@ from app.models.run import AgentRun, AgentStep, Approval
 from app.models.project import Project, Decision
 from app.models.artifact import ProjectArtifact
 from app.models.user import User
+from tests.mock_responses import code_review_response
 
 from fastapi.testclient import TestClient
 from app.main import app
 
 class MockLLMProvider:
     async def generate(self, system_prompt: str, user_prompt: str, response_schema=None) -> str:
+        if "Automated Code Reviewer" in system_prompt or "CodeReviewer" in system_prompt:
+            return code_review_response()
         if "Code Generator" in system_prompt or "Principal Software Engineer" in system_prompt:
             return '{"implementation_plan": "Plan content", "files": [{"path": "backend/app/api/v1/mock_temp.py", "content": "class Temp:\\n    pass\\n", "type": "code"}], "confidence": 0.99}'
         return (

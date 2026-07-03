@@ -20,6 +20,7 @@ from app.models.run import AgentRun, AgentStep
 from app.models.project import Project, Decision
 from app.models.artifact import ProjectArtifact
 from app.models.user import User
+from tests.mock_responses import code_review_response, response_for_prompt
 
 class MockLLMProvider(LLMProvider):
     def __init__(self, responses=None):
@@ -33,26 +34,7 @@ class MockLLMProvider(LLMProvider):
             if isinstance(res, Exception):
                 raise res
             return res
-        if "Design Reviewer and QA" in system_prompt:
-            return (
-                '{"executive_summary": "Review summary", "strengths": ["Str"], "weaknesses": ["Weak"], '
-                '"scalability_issues": ["Scale"], "security_concerns": ["Security"], "cost_risks": ["Cost"], '
-                '"architectural_gaps": ["Gap"], "alternative_approaches": ["Alt"], '
-                '"review_decisions": [{"title": "Authentication concerns", "severity": "Medium", "recommendation": "Encrypt payload"}], '
-                '"confidence": 0.92}'
-            )
-        if "Engineering Planner" in system_prompt or "Task Planner" in system_prompt or "Planner" in system_prompt:
-            return '{"epic_title": "Epic", "epic_description": "Desc", "tasks": [], "confidence": 0.95}'
-        if "Code Generator" in system_prompt or "Principal Software Engineer" in system_prompt:
-            return '{"implementation_plan": "Plan", "files": [], "confidence": 0.95}'
-        return (
-            '{"executive_summary": "Summary", "architecture_overview": "Overview", '
-            '"recommended_stack": ["React", "FastAPI"], "database_design": ["Table users"], '
-            '"api_design": ["GET /users"], "system_components": ["Auth"], "tradeoffs": ["SQL vs NoSQL"], '
-            '"risks": ["Auth latency"], "scalability_considerations": ["Caching"], '
-            '"decisions": [{"title": "DB Choice", "description": "Relational choice", "options": ["Postgre", "Mongo"], "selected_option": "Postgre", "rationale": "ACID"}], '
-            '"confidence": 0.95}'
-        )
+        return response_for_prompt(system_prompt)
 
 @pytest.fixture(autouse=True)
 async def setup_db():
@@ -182,7 +164,9 @@ async def test_workflow_engine_pm_architect_chaining():
                 return '{"epic_title": "Epic", "epic_description": "Desc", "tasks": [], "confidence": 0.95}'
             elif "Code Generator" in system_prompt or "Principal Software Engineer" in system_prompt:
                 return '{"implementation_plan": "Plan", "files": [], "confidence": 0.95}'
-            return ""
+            elif "Automated Code Reviewer" in system_prompt or "CodeReviewer" in system_prompt:
+                return code_review_response()
+            return response_for_prompt(system_prompt)
 
     mock_provider = ChainedMockLLMProvider()
     

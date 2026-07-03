@@ -22,6 +22,7 @@ from app.models.user import User
 
 from fastapi.testclient import TestClient
 from app.main import app
+from tests.mock_responses import code_review_response, response_for_prompt
 
 class MockLLMProvider(LLMProvider):
     def __init__(self, responses=None):
@@ -35,28 +36,7 @@ class MockLLMProvider(LLMProvider):
             if isinstance(res, Exception):
                 raise res
             return res
-        if "Principal System Architect" in system_prompt:
-            return (
-                '{"executive_summary": "Summary", "architecture_overview": "Overview", '
-                '"recommended_stack": ["React", "FastAPI"], "database_design": ["Table users"], '
-                '"api_design": ["GET /users"], "system_components": ["Auth"], "tradeoffs": ["SQL vs NoSQL"], '
-                '"risks": ["Auth latency"], "scalability_considerations": ["Caching"], '
-                '"decisions": [{"title": "DB Choice", "description": "Relational choice", "options": ["Postgre", "Mongo"], "selected_option": "Postgre", "rationale": "ACID"}], '
-                '"confidence": 0.95}'
-            )
-        if "Design Reviewer and QA" in system_prompt:
-            return (
-                '{"executive_summary": "Review summary", "strengths": ["Str"], "weaknesses": ["Weak"], '
-                '"scalability_issues": ["Scale"], "security_concerns": ["Security"], "cost_risks": ["Cost"], '
-                '"architectural_gaps": ["Gap"], "alternative_approaches": ["Alt"], '
-                '"review_decisions": [{"title": "Authentication concerns", "severity": "Medium", "recommendation": "Encrypt payload"}], '
-                '"confidence": 0.92}'
-            )
-        if "Engineering Planner" in system_prompt or "Task Planner" in system_prompt or "Planner" in system_prompt:
-            return '{"epic_title": "Epic", "epic_description": "Desc", "tasks": [], "confidence": 0.95}'
-        if "Code Generator" in system_prompt or "Principal Software Engineer" in system_prompt:
-            return '{"implementation_plan": "Plan", "files": [], "confidence": 0.95}'
-        return '{"summary": "Mock summary", "requirements": ["Req 1"], "user_stories": ["Story 1"], "risks": ["Risk 1"], "decisions": ["Decision 1"], "confidence": 0.9}'
+        return response_for_prompt(system_prompt)
 
 @pytest.fixture(autouse=True)
 async def setup_db():
@@ -230,17 +210,26 @@ async def test_workflow_pause_and_resume_flow(test_client, auth_headers):
 
         await asyncio.sleep(1.5)
 
-        # Verify run is now in WAITING_APPROVAL status, stage CodeGenerator
+        # Verify CodeGenerator ran through CodeReviewer and paused for final approval.
         async with AsyncSessionLocal() as db:
             run_res = await db.execute(select(AgentRun).where(AgentRun.id == run_id))
             run_obj = run_res.scalars().first()
             assert run_obj.status == "WAITING_APPROVAL"
-            assert run_obj.current_stage == "CodeGenerator"
+            assert run_obj.current_stage == "CodeReviewer"
 
-        # 6. Approve CodeGenerator Stage (Final complete & write)
+            review_art = (await db.execute(
+                select(ProjectArtifact).where(
+                    ProjectArtifact.run_id == run_id,
+                    ProjectArtifact.artifact_type == "CODE_REVIEW"
+                )
+            )).scalars().first()
+            assert review_art is not None
+            assert code_review_response().split('"summary": ')[1].split(', "score"')[0].strip('"') in review_art.content
+
+        # 6. Approve CodeReviewer Stage (Final complete & write)
         resp = test_client.post(
             f"/api/v1/runs/{run_id}/approve",
-            json={"stage": "CodeGenerator", "approved_by": "lead_dev", "comments": "Code written safely"},
+            json={"stage": "CodeReviewer", "approved_by": "lead_dev", "comments": "Code written safely"},
             headers=auth_headers
         )
         assert resp.status_code == 200
